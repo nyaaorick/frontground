@@ -1,6 +1,6 @@
 # Agent Rules — JobForum MVP
 
-> **Purpose**: This file is the single source of truth for the AI coding agent (Cursor).  
+> **Purpose**: This file is the single source of truth for the AI coding agent  
 > Read this entire file before writing any code. Follow every rule exactly.
 
 ---
@@ -19,13 +19,13 @@
 ## 1. Technology Stack (Locked)
 
 ```
-Framework   : Next.js 15 (App Router, React 19)
+Framework   : Next.js 15
 Language    : TypeScript — strict mode ON (no `any`, no `ts-ignore`)
 Database    : Supabase (PostgreSQL 15 + RLS + Realtime)
 Styling     : Tailwind CSS v4
-Components  : shadcn/ui (radix primitives)
-Auth        : Supabase Auth (email+password for MVP)
-Deployment  : Vercel (free tier)
+Components  : shadcn+Tailwind
+Auth        : Supabase Auth (Apple + Microsoft for MVP)
+Deployment  : Docker
 ```
 
 **Never introduce new dependencies without asking first.**
@@ -44,17 +44,6 @@ Deployment  : Vercel (free tier)
 - Reply to a comment (max depth = 2, i.e. comment → reply only)
 - Delete own comment (soft-delete, show "已删除" placeholder)
 - View user profile `/u/[username]` showing their public posts
-
-### ❌ OUT of scope for MVP (do not build)
-
-- Edit post / edit comment
-- Upvote / downvote
-- Direct messaging / friends
-- Search
-- Notifications
-- AI moderation bot
-- Image uploads
-- Company creation by users (seed companies via SQL only)
 
 ---
 
@@ -181,111 +170,9 @@ create trigger sync_comment_count
   for each row execute procedure public.update_post_comment_count();
 ```
 
-### 3.2 RLS Policies
-
-```sql
--- =========================================================
--- Enable RLS on all tables
--- =========================================================
-alter table public.profiles  enable row level security;
-alter table public.companies enable row level security;
-alter table public.posts     enable row level security;
-alter table public.comments  enable row level security;
-
--- =========================================================
--- profiles
--- =========================================================
--- Anyone can read profiles
-create policy "profiles: public read"
-  on public.profiles for select using (true);
-
--- Users can update only their own profile
-create policy "profiles: owner update"
-  on public.profiles for update
-  using (auth.uid() = id)
-  with check (auth.uid() = id);
-
--- =========================================================
--- companies
--- =========================================================
--- Anyone can read companies (including guests)
-create policy "companies: public read"
-  on public.companies for select using (true);
-
--- Only service_role / admin can insert (seeding only)
--- No insert policy for anon/authenticated in MVP
-
--- =========================================================
--- posts
--- =========================================================
--- Published, non-deleted posts are public
-create policy "posts: public read"
-  on public.posts for select
-  using (status = 'published' and deleted_at is null);
-
--- Authenticated users can insert
-create policy "posts: authenticated insert"
-  on public.posts for insert
-  to authenticated
-  with check (auth.uid() = user_id);
-
--- Owner can soft-delete (set deleted_at, status='deleted')
-create policy "posts: owner soft delete"
-  on public.posts for update
-  to authenticated
-  using (auth.uid() = user_id)
-  with check (
-    auth.uid() = user_id
-    and deleted_at is not null   -- only allow setting deleted_at
-    and status = 'deleted'
-  );
-
--- =========================================================
--- comments
--- =========================================================
-create policy "comments: public read"
-  on public.comments for select
-  using (deleted_at is null);
-
-create policy "comments: authenticated insert"
-  on public.comments for insert
-  to authenticated
-  with check (auth.uid() = user_id);
-
-create policy "comments: owner soft delete"
-  on public.comments for update
-  to authenticated
-  using (auth.uid() = user_id)
-  with check (
-    auth.uid() = user_id
-    and deleted_at is not null
-    and status = 'deleted'
-  );
-```
-
-### 3.3 Seed Data (run after schema)
-
-```sql
--- Sample companies (add more as needed)
-insert into public.companies (name, slug, aliases, description) values
-  ('字节跳动', 'bytedance',    array['ByteDance','字节','抖音集团'],    '互联网科技公司，旗下产品包括抖音、TikTok、今日头条。'),
-  ('阿里巴巴', 'alibaba',      array['Alibaba','阿里','淘宝','天猫'],   '电商及云计算巨头。'),
-  ('腾讯',     'tencent',      array['Tencent','TX','微信'],            '游戏、社交、金融科技综合集团。'),
-  ('美团',     'meituan',      array['Meituan','美团点评'],             '生活服务平台。'),
-  ('京东',     'jd',           array['JD','京东商城'],                  '电商及物流。'),
-  ('华为',     'huawei',       array['Huawei'],                         '通信设备、手机、云计算。');
-```
-
----
 
 ## 4. File & Folder Structure
 
-```
-.
-├── .cursor/
-│   └── rules/
-│       └── agent.md          ← this file
-│
 ├── app/
 │   ├── layout.tsx             ← root layout (Providers, fonts)
 │   ├── page.tsx               ← homepage (list featured companies)
@@ -329,33 +216,6 @@ insert into public.companies (name, slug, aliases, description) values
 └── .env.local                  ← NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY
 ```
 
----
-
-## 5. Coding Conventions
-
-### 5.1 Server vs. Client Components
-
-```
-DEFAULT = Server Component (no 'use client')
-Add 'use client' ONLY when you need:
-  - useState / useEffect / useReducer
-  - onClick / onChange event handlers
-  - Browser APIs
-  - shadcn/ui form components (they use Radix which needs interactivity)
-```
-
-**Pattern**: fetch data in Server Component, pass to a thin Client Component for interaction.
-
-```tsx
-// ✅ GOOD — server fetches, client renders form
-// app/r/[slug]/new/page.tsx  (Server Component)
-export default async function NewPostPage({ params }) {
-  const company = await getCompany(params.slug)   // server-side fetch
-  return <PostForm company={company} />            // client component
-}
-
-// ❌ BAD — fetching in client with useEffect
-```
 
 ### 5.2 Supabase Data Fetching
 
@@ -368,8 +228,7 @@ const { data, error } = await supabase
   .from('posts')
   .select('*, profiles(username), companies(name, slug)')
   .eq('company_id', company.id)
-  .eq('status', 'published')
-  .is('deleted_at', null)
+  // NEVER filter by deleted_at here. Fetch all, and let the client render the "已删除" placeholder for soft-deleted items.
   .order('created_at', { ascending: false })
   .limit(30)
 
@@ -412,11 +271,22 @@ export async function deletePost(postId: string) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) throw new Error('Unauthorized')
 
-  await supabase
+  const now = new Date().toISOString()
+
+  // 1. Soft delete the post
+  const { error } = await supabase
     .from('posts')
-    .update({ deleted_at: new Date().toISOString(), status: 'deleted' })
+    .update({ deleted_at: now, status: 'deleted' })
     .eq('id', postId)
     .eq('user_id', user.id)  // RLS double-check
+
+  if (error) throw new Error(error.message)
+
+  // 2. Cascade soft delete to all comments under this post
+  await supabase
+    .from('comments')
+    .update({ deleted_at: now, status: 'deleted' })
+    .eq('post_id', postId)
 }
 ```
 
@@ -511,30 +381,6 @@ export type Company = {
 
 ### Post card (server-renderable)
 
-```tsx
-// components/post-card.tsx
-import Link from 'next/link'
-import { Post } from '@/lib/types'
-import { formatDistanceToNow } from 'date-fns/formatDistanceToNow'
-import { zhCN } from 'date-fns/locale'
-
-export function PostCard({ post }: { post: Post }) {
-  return (
-    <article className="border-b py-4 px-2 hover:bg-muted/40 transition-colors">
-      <div className="flex items-center gap-2 text-xs text-muted-foreground mb-1">
-        <span>{post.profiles?.username ?? '匿名'}</span>
-        <span>·</span>
-        <span>{formatDistanceToNow(new Date(post.created_at), { locale: zhCN, addSuffix: true })}</span>
-        <span className="ml-auto">{post.comment_count} 条回复</span>
-      </div>
-      <Link href={`/post/${post.id}`} className="block">
-        <h2 className="text-base font-medium leading-snug">{post.title}</h2>
-        <p className="text-sm text-muted-foreground mt-1 line-clamp-2">{post.body}</p>
-      </Link>
-    </article>
-  )
-}
-```
 
 ### Comment thread (client component for interactivity)
 
@@ -549,42 +395,37 @@ export function PostCard({ post }: { post: Post }) {
 
 ---
 
-## 7. Auth Guard Pattern
+## 7. Auth & Layout Pattern (Zero-Blocking)
 
-```tsx
-// Protect pages that require login
-// app/r/[slug]/new/page.tsx
-import { redirect } from 'next/navigation'
-import { createServerClient } from '@/lib/supabase/server'
-
-export default async function NewPostPage() {
-  const supabase = await createServerClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) redirect('/auth/login')
-  // ...
-}
-```
+- **Root Layout (`app/layout.tsx`)**: NEVER use `supabase.auth.getUser()` or `createClient()` here. The root layout must render immediately. Render `<AppShell isAuthenticated={false | null}>` directly.
+- **Client AppShell (`components/features/navigation/app-shell.tsx`)**: Fetch the auth state purely on the client side using `supabase.auth.getSession()`. Update the UI (login/logout buttons) only after the state is resolved. Implement a lightweight "auth pending" state (e.g., hidden buttons or a skeleton) to prevent UI flicker.
+- **Route Protection**: Use `middleware.ts` to check for cookie presence as a fast, lightweight guard for protected routes like `/r/[slug]/new`.
 
 ---
 
-## 8. Build Order (follow this sequence)
+## 8. Build Order (Fail-Fast Sequence)
 
-```
-Step 1  — Supabase: run schema SQL + RLS + seed companies
-Step 2  — lib/supabase/client.ts + server.ts + middleware.ts
-Step 3  — lib/types.ts
-Step 4  — middleware.ts (session refresh)
-Step 5  — app/auth/register + login pages
-Step 6  — components/nav.tsx (login state awareness)
-Step 7  — app/page.tsx (company list homepage)
-Step 8  — app/r/[slug]/page.tsx (company board — list posts)
-Step 9  — app/r/[slug]/new/page.tsx + PostForm + createPost action
-Step 10 — app/post/[id]/page.tsx (post detail + flat comment list)
-Step 11 — components/comment-thread.tsx + comment-item.tsx (tree assembly)
-Step 12 — components/comment-form.tsx + createComment action (with depth guard)
-Step 13 — Delete post / delete comment actions
-Step 14 — app/u/[username]/page.tsx (profile + public posts)
-```
+**Phase 1: Naked Infrastructure**
+Step 1 — Supabase DB: Run schema SQL (Tables & Triggers ONLY. **SKIP all RLS policies**). Seed initial companies.
+Step 2 — Lib Setup: Create `lib/types.ts` + `lib/supabase/client.ts` + `lib/supabase/server.ts` (for Server Actions).
+
+**Phase 2: Zero-Blocking Auth & Shell**
+Step 3 — Auth Pages: `app/auth/register` + `login` pages.
+Step 4 — Global UI: `components/features/navigation/app-shell.tsx` + `nav.tsx` (Fetch session client-side ONLY. Do not block `app/layout.tsx` with server-side auth checks).
+
+**Phase 3: Core Forum (Read & Write)**
+Step 5 — Homepage: `app/page.tsx` (List featured companies).
+Step 6 — Company Board: `app/r/[slug]/page.tsx` (List posts, no deleted_at filter).
+Step 7 — Create Post: `app/r/[slug]/new/page.tsx` + `PostForm` + `createPost` Server Action (Direct insert, no RLS checks).
+Step 8 — Post Detail: `app/post/[id]/page.tsx` (Render post body + raw flat comment list).
+
+**Phase 4: Interactions (Tree & Mutations)**
+Step 9 — Comment UI: `comment-thread.tsx` (Client-side tree assembly) + `comment-item.tsx`.
+Step 10 — Comment Action: `comment-form.tsx` + `createComment` Server Action (Enforce depth guard here).
+Step 11 — Soft Deletion: `deletePost` + `deleteComment` Server Actions (Direct update, cascade soft-delete).
+
+**Phase 5: User Identity**
+Step 12 — Profile: `app/u/[username]/page.tsx` (Display user info and their public posts).
 
 **Do not skip steps. Do not build step N+1 until step N is working.**
 
@@ -600,20 +441,55 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGci...
 
 Never commit `.env.local`. Never use `SUPABASE_SERVICE_ROLE_KEY` in client code.
 
----
-
-## 10. Do-Nots (hard rules for this codebase)
-
-| ❌ Never do | ✅ Do instead |
-|---|---|
-| `any` type | Proper type from `lib/types.ts` |
-| Physical `.delete()` on posts/comments | Soft delete via `deleted_at` |
-| `useEffect` for data fetching | Server Component fetch |
-| Inline SQL strings outside `lib/` | Keep all DB calls in `lib/actions/` or server components |
-| Expose service role key to client | Use anon key only on client |
-| Comment nesting beyond depth 1 | Check and throw before insert |
-| Edit post/comment (MVP is out) | Return 405 or just don't build it |
-
----
-
 *Last updated: MVP phase — posts, comments, replies only.*
+
+
+## 8. UI Rules
+
+- Do not edit `components/ui/*` directly; wrap in `components/features/*`.
+- Use Tailwind utilities only; no custom CSS files.
+- Any account picker must display a human-readable account label in the trigger and menu.
+- Never show raw account IDs in user-facing selects, summaries, or transaction metadata when an account name is available.
+- Navigation loading must use existing Next.js route loading and the existing `PendingLinkVeil` pattern on `Link` navigations.
+- Do not add global loading via `fetch` interception, `window.fetch` monkeypatching, or other request-level overlays.
+- Submit flows should keep loading local to the triggering control or dialog; do not stack a global page overlay on top of form submission pending states.
+
+## 9. Development Hygiene
+
+- Typecheck: `npx tsc --noEmit`
+- Tests: `npm test`
+
+## 10. Cloudflare + One-File Env + All-in-One Docker Image (English)
+
+- Security is not a concern for this deployment mode (secrets may be baked into the image).
+- Use a single env file at repo root:
+  - `.env.local` for local dev.
+  - Copy `.env.local` to `.env` for build/runtime. Do not use other env files.
+  - Include both public and private vars in that single file (e.g., `NEXT_PUBLIC_SUPABASE_ANON_KEY`, service role keys, OAuth secrets).
+- Dockerfile rules:
+  - Copy the `.env` into both build and runtime stages. No `--build-arg` or `--env-file` flags are needed.
+  - Build command: `docker build -t next-app:latest .` (no extra args).
+  - Runtime: `docker run -d --name folio-frontend -p 80:80 -p 443:443 --restart always next-app:latest`.
+- Cloudflare setup:
+  - Host the domain on Cloudflare, enable the orange-cloud proxy.
+  - Set SSL mode to “Full (strict)”.
+  - Certbot on the host is not required because the Cloudflare Origin Certificate is baked into the image.
+- All-in-One image:
+  - The image should bundle Nginx and the app in a single container.
+  - Port 80 redirects to HTTPS; port 443 terminates TLS with the baked-in Cloudflare Origin Certificate.
+  - Nginx config inside the image must include:
+    - `client_header_buffer_size 32k;`
+    - `large_client_header_buffers 8 64k;`
+  - Expose/serve both port 80 and 443 inside the container.
+
+## 11. No-Nonsense / Fail-Fast Developer Prompt
+
+- **Role:** Act as a Senior Software Architect specializing in Clean Code and the Fail-Fast principle.
+- **Core Instruction:** Optimize code by stripping away all "defensive programming" garbage. Do not provide "safety nets" that swallow errors or waste tokens.
+- **Strict Requirements:**
+  - **No Silent Failures:** Never use empty catch blocks or return vague values like null, undefined, or {} just to prevent a crash. If something is wrong, let it throw an error.
+  - **Eliminate "Garbage" Logic:** Remove redundant null checks or `if (data)` wrappers if the logic logically requires that data to exist. Expose exactly where the chain breaks.
+  - **Precision over Robustness:** Prefer a "brittle" but honest script over a "robust" but lying one. The code should be a "surgical strike"—minimalist, readable, and direct.
+  - **Expose the Root Cause:** If an API call fails or a configuration is missing, the error must be loud and clear in the console immediately.
+- **Goal:** Transform "defensive/messy" code into a "naked/high-performance" implementation. If you see a potential issue, report it as a bug rather than coding around it.
+- **Server Action Boundaries:** While logic must fail fast, Server Actions must catch these immediate errors at the top level and return them safely to the client (e.g., `return { error: error.message }`). The client UI MUST display this error loudly via a Toast or Alert component. Do not let unhandled promise rejections crash the Next.js router.
